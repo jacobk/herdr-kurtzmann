@@ -34,6 +34,44 @@ your `config.json`, and runs `herdr-app check`. Herdr loads a symlinked mod
 folder but doesn't hot-reload it, so copy rather than symlink. While developing,
 `./install.sh --watch` (needs `fswatch`) reinstalls on every save.
 
+## How it works
+
+**Finding the session.** When focus changes (and every 5 seconds), Kurtzmann
+asks herdr-core which process runs in the focused terminal (`hc get <terminal>
+--json`, its `foreground.pid`). Claude Code registers every running session in
+`~/.claude/sessions/<pid>.json`, which gives the `sessionId` and working folder.
+No guessing from the folder, so two sessions in the same repo stay apart. If
+the focused terminal isn't Claude Code (a shell, a pager Kurtzmann opened, the
+panel itself), the last session stays shown.
+
+**Finding the files.** The session's transcript is
+`~/.claude/projects/*/<sessionId>.jsonl`, and each subagent has its own in
+`<sessionId>/subagents/agent-*.jsonl` (named by the `.meta.json` beside it).
+A small `python3` filter reads only the bytes added since the last poll, up to
+the last complete line, and keeps three kinds of records: the session's AI
+title; tool results that carry a `structuredPatch` (a Write or Edit that
+succeeded, with `type: "create"` marking a new file); and Claude Code's
+file-history records, which say where it backed up each file before editing it.
+Results are cached per session, so switching back is instant.
+
+**Diffing.** Before Claude Code first edits a file in a session, it saves a
+copy in `~/.claude/file-history/<sessionId>/`. The earliest backup of a file is
+its state before the session, so Diff compares that with the file now: only the
+session's changes, committed or not, inside a repo or not. A file with no
+backup that the session created shows whole. Subagents don't record their own
+backups; for their files Kurtzmann falls back to the original content recorded
+in the first edit's result when there is one, else offers only "vs HEAD"
+(`git diff HEAD` in the file's folder). Inline diffs use `git diff --no-index`;
+`D` opens the same comparison in `difft`.
+
+**Opening things.** Pagers, diffs and terminal editors open with Herdr's
+`terminal.open` as ordinary terminals beside the focused pane, which close
+when the program exits. GUI editors and the system app run directly.
+
+**Cost.** Transcripts are polled every 5 seconds and git every 30, both paused
+while the window is hidden. Inline previews stop at 400 KB and inline diffs at
+4000 lines.
+
 ## What it reads and runs
 
 It reads Claude Code's files under `~/.claude` (`sessions/`, `projects/`
