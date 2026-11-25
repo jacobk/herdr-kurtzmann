@@ -1,0 +1,8 @@
+{
+  "place": "none",
+  "title": "Kurtzmann",
+  "focusable": true,
+  "palette": [
+    { "title": "Kurtzmann: open beside this pane", "command": "pane.split", "args": { "direction": "right", "mod": "kurtzmann", "props": { "standalone": true } }, "words": "claude session files edits diff review" }
+  ]
+}

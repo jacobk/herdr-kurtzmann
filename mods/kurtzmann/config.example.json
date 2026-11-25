@@ -1,0 +1,15 @@
+{
+  "place": "right",
+  "viewers": {
+    "md": "glow -p {file}",
+    "json": "jq -C . {file} | less -R",
+    "*": "less -R {file}"
+  },
+  "open_with_app": ["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "html", "docx", "xlsx", "pptx", "mp4", "mov"],
+  "app": "open {file}",
+  "reveal": "open -R {file}",
+  "diff": "difft --color=always {before} {after} | less -R",
+  "head_diff": "cd {dir} && DFT_COLOR=always GIT_EXTERNAL_DIFF=difft git --no-pager diff HEAD -- {file} | less -R",
+  "editor": null,
+  "editor_in_terminal": null
+}

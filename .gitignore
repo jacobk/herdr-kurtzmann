@@ -1,0 +1,7 @@
+# Written by Herdr into every mod folder; regenerated on start.
+gpui-kit.d.ts
+herdr.d.ts
+jsconfig.json
+# Personal tool overrides.
+mods/kurtzmann/config.json
+.DS_Store
