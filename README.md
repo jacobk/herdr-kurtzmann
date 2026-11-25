@@ -86,6 +86,17 @@ List: `/` filter, `j` `k` move, `↵` view, `d` diff, `o` open in pager or app,
 `D` difft in a split, `e` editor, `f` reveal, `r` refresh.
 Detail: `1` `2` `3` or `tab` Preview, Diff, vs HEAD; `esc` back.
 
+The actions are also commands you can bind in `keys.json`, acting on the
+selected file (or the one open in the detail view): `kurtzmann.view`,
+`kurtzmann.diff`, `kurtzmann.open`, `kurtzmann.opendiff`, `kurtzmann.editor`,
+`kurtzmann.finder`. They reach the panel only while it's shown. For example:
+
+```json
+{ "global": { "ctrl-shift-e": "kurtzmann.editor" } }
+```
+
+A failing action shows a toast with the reason.
+
 ## Tools
 
 Defaults: `glow` for markdown, `jq` for JSON, `bat` (if installed) or `less -R`

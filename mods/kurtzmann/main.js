@@ -9,7 +9,7 @@
 // (none = new file), else the first edit result's originalFile, else nothing.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle, InputState, Input, TextView, Editor, EditorState } from "gpui-base";
-import { focused, panes, exec, hc, home, appHome, readTextFile, run, theme, settings, window, checking, nextCommand, props, closeOverlay } from "herdr";
+import { focused, panes, exec, hc, home, appHome, readTextFile, run, theme, settings, window, checking, nextCommand, props, closeOverlay, notify } from "herdr";
 
 const POLL_MS = 5000, GIT_MS = 30000, PREVIEW_MAX = 400000, DIFF_LINES = 4000;
 
@@ -93,6 +93,10 @@ const DEFAULTS = {
   editor_in_terminal: null, // null: GUI editors (code, cursor, zed, …) run outside a terminal
 };
 
+// Prints "bat" if bat is installed, then the editor. Mods don't inherit the
+// shell profile, so when VISUAL/EDITOR are unset here, ask the login shell.
+const EDITOR_LOOKUP = `command -v bat >/dev/null && echo bat; e=\${VISUAL:-$EDITOR}; [ -n "$e" ] || e=$("\${SHELL:-/bin/sh}" -ilc 'printf __ED__%s "\${VISUAL:-$EDITOR}"' 2>/dev/null </dev/null | sed -n 's/.*__ED__//p'); printf %s "$e"`;
+
 // A command template as argv: sh -c with each {name} as a positional argument.
 function shell(command, vars) {
   const names = [], args = [];
@@ -152,10 +156,12 @@ export default class AgentWork extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "focus") { this.handle.focus(); cx.notify(); }
+        else if (["view", "diff", "open", "opendiff", "editor", "finder"].includes(c)) { this.act(c, this.detail?.path ?? this.selected()?.path, cx); cx.notify(); }
       }
     });
     cx.spawn(async (cx) => {
-      const r = await exec("sh", ["-c", 'command -v bat >/dev/null && echo bat; printf "%s" "${VISUAL:-$EDITOR}"']).catch(() => null);
+      // Mods don't inherit the shell profile, so ask the login shell for the editor.
+      const r = await exec("sh", ["-c", EDITOR_LOOKUP], { timeout: 10000 }).catch(() => null);
       const lines = (r?.stdout ?? "").split("\n");
       const bat = lines[0] === "bat";
       this.envEditor = (bat ? lines.slice(1) : lines).join("\n").trim() || null;
@@ -310,36 +316,40 @@ export default class AgentWork extends View {
     return v[ext] ?? (isMarkdown(path) ? v.md : null) ?? v["*"];
   }
 
-  terminal(command, vars, name) {
+  openTerminal(command, vars, name) {
     run("terminal.open", { argv: shell(command, vars), place: this.config.place, name });
   }
 
-  openViewer(path) {
-    const command = this.viewer(path);
-    if (command) this.terminal(command, { file: path }, path.split("/").pop());
-    else { const [cmd, ...args] = shell(this.config.app, { file: path }); exec(cmd, args).catch(() => {}); }
+  // Runs a command outside any terminal (the system app, reveal, a GUI editor).
+  detached(command, vars, fail) {
+    const [cmd, ...args] = shell(command, vars);
+    exec(cmd, args).then((r) => { if (r.code !== 0) fail(r.stderr.trim() || `exit ${r.code}`); }, fail);
   }
 
-  openEditor(path) {
+  openViewer(path, fail) {
+    const command = this.viewer(path);
+    if (command) this.openTerminal(command, { file: path }, path.split("/").pop());
+    else this.detached(this.config.app, { file: path }, fail);
+  }
+
+  openEditor(path, fail) {
     const editor = this.config.editor ?? this.envEditor ?? "vi";
     const words = editor.split(/\s+/).filter(Boolean);
     const gui = this.config.editor_in_terminal === false || (this.config.editor_in_terminal == null && GUI_EDITORS.test(words[0].split("/").pop()));
-    if (gui) {
-      const [cmd, ...args] = shell(`${words.filter((w) => w !== "--wait" && w !== "-w").join(" ")} {file}`, { file: path });
-      exec(cmd, args).catch(() => {});
-    } else this.terminal(`${editor} {file}`, { file: path }, path.split("/").pop());
+    if (gui) this.detached(`${words.filter((w) => w !== "--wait" && w !== "-w").join(" ")} {file}`, { file: path }, fail);
+    else this.openTerminal(`${editor} {file}`, { file: path }, path.split("/").pop());
   }
 
   async openDiff(path, head) {
     const s = this.sessions.get(this.current);
     const name = `diff ${path.split("/").pop()}`;
     if (head) {
-      this.terminal(this.config.head_diff, { file: path, dir: path.slice(0, path.lastIndexOf("/")) || "/" }, name);
+      this.openTerminal(this.config.head_diff, { file: path, dir: path.slice(0, path.lastIndexOf("/")) || "/" }, name);
       return;
     }
     const before = s && (await this.beforeOf(s, path));
-    if (!before) return;
-    this.terminal(this.config.diff, { before, after: s.exists.has(path) ? path : "/dev/null", file: path }, name);
+    if (!before) throw new Error("No record of this file before the session. Use the vs HEAD tab, then D.");
+    this.openTerminal(this.config.diff, { before, after: s.exists.has(path) ? path : "/dev/null", file: path }, name);
   }
 
   open(path, tab, cx) {
@@ -413,13 +423,16 @@ export default class AgentWork extends View {
 
   act(key, path, cx) {
     if (!path) return false;
-    if (key === "view") this.open(path, "preview", cx);
-    else if (key === "diff") this.open(path, "diff", cx);
-    else if (key === "open") this.openViewer(path);
-    else if (key === "opendiff") this.openDiff(path, this.detail?.tab === "head");
-    else if (key === "editor") this.openEditor(path);
-    else if (key === "finder") { const [cmd, ...args] = shell(this.config.reveal, { file: path }); exec(cmd, args).catch(() => {}); }
-    else return false;
+    const fail = (e) => notify({ title: `Kurtzmann: ${key} failed`, body: String(e?.message ?? e), level: "error" });
+    try {
+      if (key === "view") this.open(path, "preview", cx);
+      else if (key === "diff") this.open(path, "diff", cx);
+      else if (key === "open") this.openViewer(path, fail);
+      else if (key === "opendiff") { const head = this.detail?.tab === "head"; cx.spawn(async () => { try { await this.openDiff(path, head); } catch (e) { fail(e); } }); }
+      else if (key === "editor") this.openEditor(path, fail);
+      else if (key === "finder") this.detached(this.config.reveal, { file: path }, fail);
+      else return false;
+    } catch (e) { fail(e); }
     return true;
   }
 
