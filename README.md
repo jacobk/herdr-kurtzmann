@@ -82,14 +82,20 @@ reconstructs a file's original content for a diff. Local machine only.
 
 ## Keys
 
-List: `/` filter, `j` `k` move, `↵` view, `d` diff, `o` open in pager or app,
-`D` difft in a split, `e` editor, `f` reveal, `r` refresh.
+List: `/` filter, `u` uncommitted only, `j` `k` move, `↵` view, `d` diff,
+`o` open in pager or app, `D` difft in a split, `e` editor, `f` reveal,
+`r` refresh.
+
+A `●` after a file means it has uncommitted changes in its git repo (modified,
+staged, untracked or deleted, per `git status`). The **Uncommitted** toggle
+beside the filter (or `u`) shows only those; files outside any git repo are
+hidden while it's on. The toggle is remembered.
 Detail: `1` `2` `3` or `tab` Preview, Diff, vs HEAD; `esc` back.
 
 The actions are also commands you can bind in `keys.json`, acting on the
 selected file (or the one open in the detail view): `kurtzmann.view`,
 `kurtzmann.diff`, `kurtzmann.open`, `kurtzmann.opendiff`, `kurtzmann.editor`,
-`kurtzmann.finder`. They reach the panel only while it's shown. For example:
+`kurtzmann.finder`, plus `kurtzmann.uncommitted` to flip the toggle. They reach the panel only while it's shown. For example:
 
 ```json
 { "global": { "ctrl-shift-e": "kurtzmann.editor" } }

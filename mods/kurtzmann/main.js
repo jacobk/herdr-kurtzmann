@@ -144,6 +144,9 @@ export default class AgentWork extends View {
     this.current = null; // sessionId shown; stays when focus leaves Claude
     this.detail = null; // { path, tab: "preview" | "diff" | "head" }
     this.filter = "";
+    this.uncommitted = false; // show only files with uncommitted changes
+    try { this.uncommitted = localStorage.getItem("uncommitted") === "1"; } catch {}
+    this.where = new Map(); // folder -> { top, prefix } inside a repo, or null
     this.input = InputState.new({ placeholder: "Filter files…  ( / )" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value(); this.at = 0; this.scroll.scroll_to_item(0); cx.notify(); });
     this.input.on("submit", (_e, cx) => { const f = this.selected(); if (f) this.open(f.path, "preview", cx); this.handle.focus(); cx.notify(); });
@@ -156,6 +159,7 @@ export default class AgentWork extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "focus") { this.handle.focus(); cx.notify(); }
+        else if (c === "uncommitted") { this.toggleUncommitted(cx); cx.notify(); }
         else if (["view", "diff", "open", "opendiff", "editor", "finder"].includes(c)) { this.act(c, this.detail?.path ?? this.selected()?.path, cx); cx.notify(); }
       }
     });
@@ -217,7 +221,7 @@ export default class AgentWork extends View {
 
   session(id) {
     let s = this.sessions.get(id);
-    if (!s) this.sessions.set(id, (s = { id, title: null, cwd: null, name: null, transcripts: new Map(), agents: new Map(), base: new Map(), before: new Map(), exists: new Set(), git: null, gitAt: 0 }));
+    if (!s) this.sessions.set(id, (s = { id, title: null, cwd: null, name: null, transcripts: new Map(), agents: new Map(), base: new Map(), before: new Map(), exists: new Set(), dirty: new Set(), git: null, gitAt: 0 }));
     return s;
   }
 
@@ -273,6 +277,7 @@ export default class AgentWork extends View {
       const ex = await exec("sh", ["-c", EXISTING, "sh", ...paths]).catch(() => null);
       if (ex) s.exists = new Set(ex.stdout.split("\n").filter(Boolean));
     }
+    await this.readDirty(s, paths);
     if (!s.cwd) return;
     const st = await exec("git", ["--no-optional-locks", "status", "--porcelain=v2", "--branch"], { cwd: s.cwd }).catch(() => null);
     if (st?.code !== 0) { s.git = null; return; }
@@ -285,6 +290,48 @@ export default class AgentWork extends View {
       ahead: ab ? Number(ab[1]) : 0, behind: ab ? Number(ab[2]) : 0,
       dirty: st.stdout.split("\n").filter((l) => l && !l.startsWith("#")).length,
     };
+  }
+
+  // Which of the files have uncommitted changes (modified, staged, untracked,
+  // deleted) in their own repo. Paths are matched repo-relative, through each
+  // folder's --show-prefix, so symlinked paths (/tmp vs /private/tmp) still match.
+  async readDirty(s, paths) {
+    const byTop = new Map();
+    for (const path of paths) {
+      const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+      if (!this.where.has(dir)) {
+        const r = await exec("git", ["rev-parse", "--show-toplevel", "--show-prefix"], { cwd: dir }).catch(() => null);
+        const [top, prefix = ""] = r?.code === 0 ? r.stdout.split("\n") : [];
+        this.where.set(dir, top ? { top, prefix } : null);
+      }
+      const w = this.where.get(dir);
+      if (!w) continue;
+      if (!byTop.has(w.top)) byTop.set(w.top, []);
+      byTop.get(w.top).push([path, w.prefix + path.slice(dir.length + 1)]);
+    }
+    const dirty = new Set();
+    for (const [top, files] of byTop) {
+      const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: top }).catch(() => null);
+      if (r?.code !== 0) continue;
+      const changed = new Set();
+      const fields = r.stdout.split("\0");
+      for (let i = 0; i < fields.length; i++) {
+        const e = fields[i];
+        if (e.length < 4) continue;
+        changed.add(e.slice(3));
+        if (/[RC]/.test(e.slice(0, 2))) i++; // a rename's next field is its old path
+      }
+      for (const [path, rel] of files) if (changed.has(rel)) dirty.add(path);
+    }
+    s.dirty = dirty;
+  }
+
+  toggleUncommitted(cx) {
+    this.uncommitted = !this.uncommitted;
+    try { localStorage.setItem("uncommitted", this.uncommitted ? "1" : "0"); } catch {}
+    this.at = 0;
+    const s = this.sessions.get(this.current);
+    if (s && this.uncommitted) { s.gitAt = 0; this.poll(cx); }
   }
 
   // The file as it was before this session touched it: a path, "/dev/null" for
@@ -462,6 +509,7 @@ export default class AgentWork extends View {
     for (const [key, a] of agents) {
       const files = [];
       for (const f of a.files.values()) {
+        if (this.uncommitted && !s.dirty.has(f.path)) continue;
         const shown = base && inside(f.path, base) ? f.path.slice(base.length + 1) : tilde(f.path);
         const m = fuzzy(this.filter, shown);
         if (m) files.push({ kind: "file", file: f, shown, hits: m.hits, score: m.score, id: `f-${key}-${f.path}` });
@@ -534,6 +582,7 @@ export default class AgentWork extends View {
         .child(v_flex().flex_1().min_w(0)
           .child(this.marked(name, item.hits, cut + 1, t).when(missing, (el) => el.text_color(t.dim)))
           .when(Boolean(dir), (el) => el.child(this.marked(dir, item.hits, 0, t).text_size(11).text_color(t.dim))))
+        .when(s.dirty.has(f.path), (el) => el.child(div().flex_none().text_size(11).text_color(t.blocked).child("●")))
         .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(f.ts))))
       .when(selected, (el) => el.child(div().pl(20).child(this.actions(f.path, "row", t, s))));
   }
@@ -638,7 +687,8 @@ export default class AgentWork extends View {
           else if (k === "o") this.act("open", sel, cx);
           else if (k === "e") this.act("editor", sel, cx);
           else if (k === "f") this.act("finder", sel, cx);
-          else if (k === "r" && s) { s.gitAt = 0; this.poll(cx); }
+          else if (k === "u") this.toggleUncommitted(cx);
+          else if (k === "r" && s) { s.gitAt = 0; this.where.clear(); this.poll(cx); }
           else return;
         }
         cx.stop_propagation();
@@ -657,17 +707,24 @@ export default class AgentWork extends View {
           .when(g?.dirty > 0, (el) => el.child(div().flex_none().text_color(t.blocked).child(`● ${g.dirty}`)))))
       .when(Boolean(this.detail) && Boolean(s), (el) => el.child(this.detailView(s, t)))
       .when(!this.detail, (el) => el
-        .child(h_flex().flex_none().mx(8).mt(8).h(30).px(8).gap(6).items_center().rounded(7).border_1()
-          .border_color(this.typing ? t.accent : t.border).bg(t.background)
-          .on_mouse_down("left", stop)
-          .child(Input.new(this.input).flex_1().h_full().text_size(12.5).text_color(t.foreground)))
+        .child(h_flex().flex_none().mx(8).mt(8).gap(6).items_center()
+          .child(h_flex().flex_1().min_w(0).h(30).px(8).items_center().rounded(7).border_1()
+            .border_color(this.typing ? t.accent : t.border).bg(t.background)
+            .on_mouse_down("left", stop)
+            .child(Input.new(this.input).flex_1().h_full().text_size(12.5).text_color(t.foreground)))
+          .child(h_flex().id("aw-uncommitted").flex_none().h(30).px(8).gap(5).items_center().rounded(7).border_1().cursor_pointer()
+            .border_color(this.uncommitted ? t.accent : t.border).bg(this.uncommitted ? t.selected : t.background)
+            .text_size(12).text_color(this.uncommitted ? t.foreground : t.muted)
+            .hover((st) => st.bg(t.hover)).on_mouse_down("left", stop)
+            .on_click((_e, cx) => { this.toggleUncommitted(cx); this.handle.focus(); cx.notify(); })
+            .child(div().text_color(t.blocked).child("●")).child(div().child("Uncommitted")).child(div().text_color(t.dim).child("u"))))
         .child(v_flex().id("aw-list").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).p(6)
           .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.stop_propagation(); })
           .when(!rows.length, (el) => el.child(div().p(8).text_size(12).text_color(t.dim).child(
-            this.error ?? (!s ? "Focus a terminal running Claude Code" : this.filter ? "No files match" : "No files written or edited yet"))))
+            this.error ?? (!s ? "Focus a terminal running Claude Code" : this.filter ? "No files match" : this.uncommitted ? "No uncommitted files (files outside a git repo are hidden)" : "No files written or edited yet"))))
           .children(rows.map((r, i) => this.row(r, i, i === this.at, s, t)))))
       .child(div().flex_none().px(12).py(5).border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
         .child(this.detail ? "esc back   1 2 3 / tab switch view   o open   D difft   e editor   f finder"
-          : "/ filter   j k move   ↵ view   d diff   o open   D difft   e editor   f finder"));
+          : "/ filter   u uncommitted   j k move   ↵ view   d diff   o open   D difft   e editor   f finder"));
   }
 }
